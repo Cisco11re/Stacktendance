@@ -106,3 +106,110 @@
             (not (is-eq (unwrap-panic (element-at s u0)) " "))
             ;; Ensure last character isn't whitespace
             (not (is-eq (unwrap-panic (element-at s (- len u1))) " ")))))
+
+
+
+(define-public (create-event (name (string-ascii 50)) 
+                           (description (string-ascii 200))
+                           (start-height uint)
+                           (duration uint)
+                           (base-reward uint)
+                           (bonus-reward uint)
+                           (min-attendance uint))
+    (let ((event-id (+ (var-get event-counter) u1))
+          (end-height (+ start-height duration))
+          (current-height stacks-block-height)
+          (name-length (len name))
+          (desc-length (len description)))
+        (begin
+            ;; Authorization check
+            (asserts! (is-eq tx-sender (var-get contract-owner)) ERR-NOT-AUTHORIZED)
+
+            ;; Name validation
+            (asserts! (and (>= name-length MIN-NAME-LENGTH)
+                          (<= name-length MAX-NAME-LENGTH)
+                          (is-valid-ascii name))
+                     ERR-INVALID-NAME)
+
+            ;; Description validation
+            (asserts! (and (>= desc-length MIN-DESC-LENGTH)
+                          (<= desc-length MAX-DESC-LENGTH)
+                          (is-valid-ascii description))
+                     ERR-INVALID-DESCRIPTION)
+
+            ;; Duration validation
+            (asserts! (and (>= duration MIN-DURATION) 
+                          (<= duration MAX-DURATION)) 
+                     ERR-INVALID-DURATION)
+
+            ;; Start height validation - must be in the future
+            (asserts! (> start-height current-height) 
+                     ERR-INVALID-START-HEIGHT)
+
+
+            (asserts! (and (<= base-reward MAX-REWARD)
+                          (<= bonus-reward MAX-REWARD)
+                          (> base-reward u0))
+                     ERR-INVALID-REWARD)
+
+
+            (asserts! (and (> min-attendance u0)
+                          (<= min-attendance duration))
+                     ERR-INVALID-MIN-ATTENDANCE)
+
+
+            (map-set events event-id
+                {
+                    name: name,
+                    description: description,
+                    start-height: start-height,
+                    end-height: end-height,
+                    base-reward: base-reward,
+                    bonus-reward: bonus-reward,
+                    min-attendance-duration: min-attendance,
+                    organizer: tx-sender,
+                    is-active: true
+                })
+
+            ;; Update event counter
+            (var-set event-counter event-id)
+            (ok event-id))))
+
+
+;; Helper function to check if an event exists
+(define-read-only (event-exists (event-id uint))
+    (is-some (map-get? events event-id)))
+;; Attendance functions
+(define-public (check-in (event-id uint))
+    (let ((event (unwrap! (get-event event-id) ERR-EVENT-NOT-FOUND)))
+        (begin
+            (asserts! (get is-active event) ERR-EVENT-ENDED)          
+            (asserts! (>= stacks-block-height (get start-height event)) ERR-EVENT-NOT-ENDED)  
+            (asserts! (< stacks-block-height (get end-height event)) ERR-EVENT-ENDED)         
+            (asserts! (is-none (get-attendance-record event-id tx-sender)) ERR-ALREADY-REGISTERED)
+            (map-set event-attendance 
+                {event-id: event-id, attendee: tx-sender}
+                {
+                    check-in-height: stacks-block-height,
+                    check-out-height: us0,
+                    duration: u0,
+                    verified: false
+                })
+            (ok true))))
+
+(define-public (check-out (event-id uint))
+    (let ((attendance (unwrap! (get-attendance-record event-id tx-sender) ERR-EVENT-NOT-FOUND))
+          (event (unwrap! (get-event event-id) ERR-EVENT-NOT-FOUND)))
+        (begin
+            (asserts! (get is-active event) ERR-EVENT-ENDED)                         
+            (asserts! (> stacks-block-height (get check-in-height attendance)) ERR-INVALID-DURATION) 
+            (let ((duration (- stacks-block-height (get check-in-height attendance))))      
+                (map-set event-attendance
+                    {event-id: event-id, attendee: tx-sender}
+                    {
+                        check-in-height: (get check-in-height attendance),          
+                        check-out-height: stacks-block-height,
+                        duration: duration,
+                        verified: false
+                    })
+                (ok duration)))))
